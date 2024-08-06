@@ -1,6 +1,5 @@
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import activations
 
 
 def cosine_distance(x1: tf.Tensor, x2: tf.Tensor):
@@ -12,8 +11,7 @@ def cosine_distance(x1: tf.Tensor, x2: tf.Tensor):
 
 def contrastive_loss(anchor, pred, y, margin = 0.5):
     distances = tf.math.reduce_euclidean_norm(anchor - pred, axis=-1)
-    margin_distances = tf.math.reduce_euclidean_norm(anchor - pred, axis=-1)
-    margin_distances = tf.maximum(margin - margin_distances, 0)
+    margin_distances = tf.maximum(margin - distances, 0)
     losses = (1 - y) * tf.math.pow(distances, 2) + y * tf.math.pow(margin_distances, 2)
     return losses
 

@@ -34,7 +34,7 @@ def main():
     indices = tf.data.Dataset.from_tensor_slices(list(range(len(image_dataset))))
     dataset = tf.data.Dataset.zip(image_dataset, indices)
 
-    # training hyper-parameters
+    # initalize hyper-parameters
     batch_count = len(dataset.batch(Config.BATCH_SIZE))
 
     model = custom.models.SiameseModel()
