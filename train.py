@@ -2,6 +2,7 @@ import math
 import os
 import random
 import time
+from datetime import datetime
 
 import numpy as np
 import tensorflow as tf
@@ -49,18 +50,17 @@ def main():
     optimizer = Adam(decay_fn)
 
     # training
-    best_loss = None
+    best_loss = float("inf")
     matrix = common.make_matrix(model, image_dataset, 32)
     for epoch in range(Config.CHECKPOINT + 1, Config.EPOCHS):
         epoch_start = time.time()
-        triplet_loss = 0
         pos_train_loss = 0
         neg_train_loss = 0
 
         if (epoch + 1) % Config.OFFLINE_SELECT == 0:
             common.make_matrix(model, image_dataset, 32)
 
-        print(f"epoch: {epoch}")
+        print(f"epoch: {epoch} {datetime.now().strftime('%Y-%m-%dT %H:%M:%S')}")
         for batch in dataset.batch(Config.BATCH_SIZE):
             anchor, indices = batch
             positive = common.augmentation(tf.identity(anchor))
@@ -82,25 +82,16 @@ def main():
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
             neg_train_loss += np.sum(negative_loss.numpy()) / len(negative_loss)
 
-                # losses = custom.losses.triplet_loss(
-                #     anchor_pred, positive_pred, negative_pred, margin=1
-                # )
-
-            # gradients = tape.gradient(losses, model.trainable_variables)
-            # optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-
-            # triplet_loss += np.sum(losses.numpy())
-
         # print training loss
-        triplet_loss /= batch_count
         epoch_time = time.time() - epoch_start
-        print(f"\ttriplet loss: {triplet_loss}")
+        print(f"positive loss: {pos_train_loss}, negative loss: {neg_train_loss}")
         print(f"\tprocessing time: {int(epoch_time) // 60}m {epoch_time % 60:.3f}s")
 
         # save best only
-        if best_loss is None or triplet_loss < best_loss:
-            model.save_weights(f"ai/checkpoints/ckpt_{epoch}")
-            best_loss = triplet_loss
+        train_loss = pos_train_loss + neg_train_loss
+        if train_loss < best_loss:
+            model.save_weights(f"ai/checkpoints/ckpt_{epoch}_{train_loss:.3f}")
+            best_loss = train_loss
     total_time = time.time() - TOTAL_START
     print(f"total time: {int(total_time) // 60}m {total_time % 60:.3f}s")
 
