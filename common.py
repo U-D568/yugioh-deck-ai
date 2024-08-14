@@ -35,15 +35,6 @@ def load_image_to_tensor(path):
     image = tf.image.decode_jpeg(image, channels=3)
     return image
 
-
-def make_matrix(model, dataset, batch_size=Config.BATCH_SIZE):
-    matrix = []
-    for data in dataset.batch(batch_size):
-        pred = model(data)
-        matrix.append(pred)
-    matrix = tf.concat(matrix, axis=0)
-    return matrix
-
 def random_negative_selector(indices, image_pathes):
     # description: select negative data randomly
     # args:
@@ -116,8 +107,8 @@ augmentation = models.Sequential(
         layers.Resizing(Config.IMAGE_SHAPE[0], Config.IMAGE_SHAPE[1]),
         custom.augment.RandomZoominAndOut((0.4, 1)),
         # layers.RandomFlip("horizontal_and_vertical"),
-        layers.RandomContrast(0.4),
-        layers.RandomBrightness(0.2),
+        layers.RandomContrast(0.1),
+        layers.RandomBrightness(0.1),
         layers.RandomTranslation((-0.1, 0.1), (-0.1, 0.1)),
         layers.Rescaling(1.0 / 255),
     ]

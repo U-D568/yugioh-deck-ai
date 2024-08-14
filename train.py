@@ -51,14 +51,14 @@ def main():
 
     # training
     best_loss = float("inf")
-    matrix = common.make_matrix(model, image_dataset, 32)
+    matrix = model.make_matrix(image_dataset, 32)
     for epoch in range(Config.CHECKPOINT + 1, Config.EPOCHS):
         epoch_start = time.time()
         pos_train_loss = 0
         neg_train_loss = 0
 
         if (epoch + 1) % Config.OFFLINE_SELECT == 0:
-            common.make_matrix(model, image_dataset, 32)
+            model.make_matrix(image_dataset, 32)
 
         print(f"epoch: {epoch} {datetime.now().strftime('%Y-%m-%dT %H:%M:%S')}")
         for batch in dataset.batch(Config.BATCH_SIZE):
@@ -77,7 +77,7 @@ def main():
                 anchor_pred = model(anchor)
                 negative = common.hard_negative_selector(matrix, anchor_pred, indices, image_pathes)
                 negative_pred = model(negative)
-                negative_loss = custom.losses.contrastive_loss(anchor_pred, negative_pred, 1, 0.5)
+                negative_loss = custom.losses.contrastive_loss(anchor_pred, negative_pred, 1, 1)
             gradients = tape.gradient(negative_loss, model.trainable_variables)
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
             neg_train_loss += np.sum(negative_loss.numpy()) / len(negative_loss)
