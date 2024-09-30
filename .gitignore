@@ -194,8 +194,9 @@ pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,python
 
-dataset
+datasets
 *checkpoints
 checkpoints*
 backup
 weights
+runs
