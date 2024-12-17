@@ -1,10 +1,10 @@
 import tensorflow as tf
 import numpy as np
 
-import custom
+import utils
 
 
-# model = custom.models.EmbeddingModel()
+# model = utils.models.EmbeddingModel()
 # model.load_weights("weights/effnet_checkpoints/ckpt_355_0.990")
 
 # tf.saved_model.save(model.model, "weights/embeddingModel")

@@ -194,9 +194,15 @@ pyrightconfig.json
 
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,python
 
-datasets
+datasets/*
 *checkpoints
 checkpoints*
 backup
-weights
+weights/*
 runs
+test/
+!weights/embedding.h5
+!weights/yolov8n_detector.pt
+!weights/matrix.npy
+!datasets/card_data.csv
+!datasets/card_id_list.pickle

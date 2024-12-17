@@ -10,17 +10,14 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.optimizers.schedules import ExponentialDecay
 
 from config import Config
-import custom
-import common
+from utils import *
 
 
 def main():
-    # Constants
-    TOTAL_START = time.time()
-
+    train_start = time.time()
 
     # data preparation
-    image_pathes = common.extract_images(Config.IMAGE_PATH)
+    image_pathes = common.extract_images("datasets/card_images_cropped_224")
     filenames = []
     for path in image_pathes:
         basename = os.path.basename(path)
@@ -33,36 +30,34 @@ def main():
     dataset = tf.data.Dataset.zip(image_dataset, indices)
 
     # initalize hyper-parameters
-    batch_count = len(dataset.batch(Config.BATCH_SIZE))
-    model = custom.models.EmbeddingModel(Config.IMAGE_SHAPE)
-    # model.load_weights("./effnet_checkpoints/ckpt_298_1.575")
+    model = models.EmbeddingModel(Config.IMAGE_SHAPE)
     # decay_fn = ExponentialDecay(Config.INITIAL_LEARNING_RATE, decay_steps=(batch_count) * 10, decay_rate=0.5)
-    # warmup = custom.scheduler.WarmUp(Config.INITIAL_LEARNING_RATE, decay_fn, batch_count * 3)
+    # warmup = scheduler.WarmUp(Config.INITIAL_LEARNING_RATE, decay_fn, batch_count * 3)
     optimizer = Adam(learning_rate=0.00003)
 
     # training
     best_loss = float("inf")
-    for epoch in range(299, 500):
-        
+    for epoch in range(300):
         epoch_start = time.time()
         train_pos_loss = 0
         train_neg_loss = 0
 
-        # if (epoch + 1) % Config.OFFLINE_SELECT == 0:
-        #     matrix = model.make_matrix(image_dataset, 64)
+        if epoch > Config.HARD_SELECT and epoch % 5 == 0:
+            matrix = model.make_matrix(image_dataset, 64)
 
         for batch in dataset.batch(Config.BATCH_SIZE):
             anchor, indices = batch
             positive = common.augmentation(anchor)
-            negative = common.random_negative_selector(indices, image_pathes)
-            # if epoch > Config.HARD_SELECT:
-            #     pred_anchor = model(anchor)
-            #     negative = common.hard_negative_selector(matrix, pred_anchor, indices, image_pathes)
+            if epoch > Config.HARD_SELECT:
+                pred_anchor = model(anchor)
+                negative = common.hard_negative_selector(matrix, pred_anchor, indices, image_pathes)
+            else:
+                negative = common.random_negative_selector(indices, image_pathes)
 
             with tf.GradientTape() as tape:
                 pred_anchor, pred_positive, pred_negative = model(anchor, positive, negative)
-                positive_loss = custom.losses.contrastive_loss(pred_anchor, pred_positive, 0)
-                negative_loss = custom.losses.contrastive_loss(pred_anchor, pred_negative, 1, 1)
+                positive_loss = losses.contrastive_loss(pred_anchor, pred_positive, 0)
+                negative_loss = losses.contrastive_loss(pred_anchor, pred_negative, 1, 1)
                 loss = positive_loss + negative_loss
             gradients = tape.gradient(loss, model.trainable_variables)
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
@@ -83,7 +78,7 @@ def main():
         if train_loss < best_loss:
             model.save_weights(f"{Config.SAVE_PATH}/ckpt_{epoch}_{train_loss:.3f}")
             best_loss = train_loss
-    total_time = time.time() - TOTAL_START
+    total_time = time.time() - train_start
     print(f"total time: {int(total_time) // 60}m {total_time % 60:.3f}s")
 
 
