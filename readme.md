@@ -3,6 +3,15 @@
 
 Using yolov8 and EfficientNet, recognize Yu-Gi-Oh cards from the deck list image.
 
+
+### Requirements
+- numpy                        1.26.4
+- opencv-python                4.10.0.84
+- pandas                       2.2.2
+- tensorflow                   2.15.0
+- ultralytics                  8.2.82
+
+
 ### Motivation
 Many people share their deck list by capturing game screens or another web page. However, putting all cards in one image, the card size will be reduced and it will be hard to recognize. If you want to know some cards in the shared deck list image, you have to ask the author what he used or manually compare 10000+ Yugioh cards. To solve this problem yolov8 is used to crop card images from the deck list, then embed each card image using EfficientNetB0, and find the card with the closest distance of the input image and the precomputed card vectors.
 
