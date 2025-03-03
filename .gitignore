@@ -193,7 +193,7 @@ pyrightconfig.json
 .ionide
 
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,python
-
+.env
 datasets/*
 *checkpoints
 checkpoints*
@@ -205,4 +205,8 @@ test/
 !weights/yolov8n_detector.pt
 !weights/matrix.npy
 !datasets/card_data.csv
+!datasets/train.csv
+!datasets/valid.csv
+!datasets/test.csv
 !datasets/card_id_list.pickle
+*.pt

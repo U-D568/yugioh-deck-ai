@@ -2,6 +2,9 @@ from . import augment
 from . import losses
 from . import layers
 from . import models
-from . import scheduler
 from . import metrics
 from . import common
+from . import head
+from . import ops
+from . import struct
+from . import logger

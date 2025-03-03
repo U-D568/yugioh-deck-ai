@@ -1,29 +1,27 @@
+from concurrent import futures
+from collections.abc import Callable, Iterable
+from collections import deque
+import datetime
+import logging
 import math
 import os
 import pickle
 import random
+import threading
+import urllib
 
+import cv2
+import numpy as np
 import pandas as pd
 import tensorflow as tf
 from tensorflow.keras import layers, models
+import torch
 
 import utils
 from config import Config
 
 
 IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".bmp"]
-card_db = pd.read_csv("card_data.csv")
-with open("card_id_list.pickle", "r+b") as fp:
-    card_ids = pickle.load(fp)
-
-
-def find_card_by_id(id: int):
-    row = card_db[card_db["id"] == id]
-    return row["kor_name"].values[0]
-
-
-def get_card_id_by_index(idx: int):
-    return card_ids[idx]
 
 
 def extract_images(path):
@@ -42,6 +40,16 @@ def get_filename(path):
     basename = os.path.basename(path)
     name, ext = os.path.splitext(basename)
     return name
+
+
+def count_parameters(layers: torch.nn.ModuleList):
+    total = 0
+    for param in layers.parameters():
+        count = 1
+        for size in param.size():
+            count *= size
+        total += count
+    return total
 
 
 def load_image_to_tensor(path):
@@ -109,22 +117,191 @@ def hard_negative_selector(matrix, anchor, indices, image_pathes):
     return tf.stack(negative)
 
 
-preprocessing = models.Sequential(
-    [
-        layers.Resizing(Config.IMAGE_SHAPE[0], Config.IMAGE_SHAPE[1]),
-        layers.Rescaling(1.0 / 255),
-    ]
-)
+def xyxy2xywh(ary: np.array):
+    shape = ary.shape
+    assert shape[-1] == 4, "Invalid input shape. The last dimension size have to be 4."
 
-augmentation = models.Sequential(
-    [
-        layers.Rescaling(255),
-        layers.Resizing(Config.IMAGE_SHAPE[0], Config.IMAGE_SHAPE[1]),
-        utils.augment.RandomZoominAndOut((0.4, 1)),
-        # layers.RandomFlip("horizontal_and_vertical"),
-        layers.RandomContrast(0.1),
-        layers.RandomBrightness(0.1),
-        layers.RandomTranslation((-0.1, 0.1), (-0.1, 0.1)),
-        layers.Rescaling(1.0 / 255),
-    ]
-)
+    flatten = ary.reshape(-1, 4)
+    height = flatten[:, 2] - flatten[:, 0]
+    width = flatten[:, 3] - flatten[:, 1]
+
+    flatten[:, 0] += width / 2
+    flatten[:, 1] += height / 2
+    flatten[:, 2] = width
+    flatten[:, 3] = height
+
+    xywh = np.reshape(flatten, shape)
+    return xywh
+
+
+def xywh2xyxy(ary: np.array):
+    shape = ary.shape
+    assert shape[-1] == 4, "Invalid input shape. The last dimension size have to be 4."
+
+    flatten = ary.reshape(-1, 4)
+    center = flatten[:, :2]
+    wh = flatten[:, 2:]
+    flatten[:, :2] = center - wh
+    flatten[:, 2:] = center + wh
+
+    xyxy = np.reshape(flatten, shape)
+    return xyxy
+
+
+def make_batch(data, batch_size):
+    for i in range(0, len(data), batch_size):
+        yield data[i : i + batch_size]
+
+
+def is_prime(num):
+    for i in range(2, int(math.sqrt(num)) + 1):
+        if num % i == 0:
+            return False
+    return True
+
+
+def get_factors(num, min_value=1):
+    result = []
+    upper_bound = int(math.sqrt(num)) + 1
+    for i in range(min_value, upper_bound):
+        if num % i == 0:
+            result.append(i)
+            result.append(num // i)
+    return result
+
+
+def detector_preprocessing(inputs):
+    # preprocess
+    assert len(inputs.shape) == 4 or len(inputs.shape) == 3
+
+    deck_image = torch.from_numpy(inputs).float()
+    if len(inputs.shape) == 3:
+        deck_image = deck_image.permute([2, 0, 1])
+    else:
+        deck_image = deck_image.permute([0, 3, 1, 2])
+
+    return deck_image / 255.0
+
+
+class EmbeddingPreprocessor:
+    def __init__(self):
+        self.preprocessing = models.Sequential(
+            [
+                layers.Resizing(224, 224),
+                layers.Rescaling(1.0 / 255),
+            ]
+        )
+
+    def __call__(self, inputs):
+        return self.preprocessing(inputs)
+
+
+class EmbeddingAugmentation:
+    def __init__(self):
+        self.augmentation = models.Sequential(
+            [
+                layers.Rescaling(255),
+                layers.Resizing(Config.IMAGE_SHAPE[0], Config.IMAGE_SHAPE[1]),
+                utils.augment.RandomZoominAndOut((0.4, 1)),
+                # layers.RandomFlip("horizontal_and_vertical"),
+                layers.RandomContrast(0.1),
+                layers.RandomBrightness(0.1),
+                layers.RandomTranslation((-0.1, 0.1), (-0.1, 0.1)),
+                layers.Rescaling(1.0 / 255),
+            ]
+        )
+
+    def __call__(self, inputs):
+        return self.augmentation(inputs)
+
+
+def make_square_size(
+    image: np.array, target_size: int, square=False
+):  # size: image size to convert
+    height, width = image.shape[:2]
+    ratio = target_size / max(height, width)  # ratio
+    if ratio != 1:  # if sizes are not equal
+        width = min(math.ceil(width * ratio), target_size)
+        height = min(math.ceil(height * ratio), target_size)
+        image = cv2.resize(image, (width, height), interpolation=cv2.INTER_LINEAR)
+
+    # padding size
+    dw = (target_size - width) / 2
+    dh = (target_size - height) / 2
+    top_padding = int(round(dh - 0.1))
+    bottom_padding = int(round(dh + 0.1))
+    left_padding = int(round(dw - 0.1))
+    right_padding = int(round(dw + 0.1))
+
+    image = cv2.copyMakeBorder(
+        image,
+        top=top_padding,
+        bottom=bottom_padding,
+        left=left_padding,
+        right=right_padding,
+        borderType=cv2.BORDER_CONSTANT,
+        value=(114, 114, 114),
+    )
+
+    return image, ratio, (left_padding, top_padding)
+
+
+class ImageLoader:
+    def __init__(self, init_data=[], num_workers=4):
+        self.queue = deque(init_data)
+        self.num_workers = num_workers
+        self.lock = threading.Lock()
+        self.out_queue = []
+        self.name_queue = []
+
+    def set_queue(self, data):
+        self.queue = deque(data)
+
+    def get_image_names(self):
+        return self.name_queue
+
+    def run(self):
+        self.out_queue = []
+        self.name_queue = []
+        threads = []
+        for _ in range(self.num_workers):
+            thread = threading.Thread(target=self.thread_main)
+            threads.append(thread)
+            thread.start()
+
+        for thread in threads:
+            thread.join()
+        return self.out_queue
+
+    def thread_main(self):
+        while True:
+            self.lock.acquire()
+            if not self.queue:
+                self.lock.release()
+                break
+            image_path = self.queue.popleft()
+            self.lock.release()
+
+            image = self.read_image(image_path)
+            self.lock.acquire()
+            self.out_queue.append(image)
+            self.name_queue.append(image_path)
+            self.lock.release()
+
+    def read_image(self, path):
+        if not os.path.exists(path):
+            id = get_filename(path)
+            url = f"https://images.ygoprodeck.com/images/cards_small/{id}.jpg"
+            print(f"FileNotFound: {path}")
+            print(f"Try download a image from {url}")
+            try:
+                urllib.request.urlretrieve(url, path)
+            except Exception as e:
+                raise e
+        return cv2.imread(path)[:, :, ::-1].copy()
+
+
+class Logger:
+    def __init__(self):
+        now = datetime.datetime.strftime("%Y-%M-%d %H%m%s")
+        self.logger = logging.basicConfig(filename=now, filemode="w")

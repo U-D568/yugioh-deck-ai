@@ -1,7 +1,7 @@
 import tensorflow as tf
 from tensorflow.keras import layers
 
-class DistanceLayer(layers.Layer):
+class EuclideanDistance(layers.Layer):
     def __init__(self, **kwarg):
         super().__init__(**kwarg)
     
