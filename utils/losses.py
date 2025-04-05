@@ -2,20 +2,21 @@ import numpy as np
 import tensorflow as tf
 import torch
 import torch.nn as nn
-from ultralytics.utils.loss import BboxLoss
+from ultralytics.utils.loss import DFLoss, bbox_iou, bbox2dist
 from ultralytics.utils.ops import xywh2xyxy
 from utils.tal import TaskAlignedAssigner, dist2bbox, make_anchors
 
 
 def cosine_distance(x1: tf.Tensor, x2: tf.Tensor):
-    inner_products = tf.tensordot(x1, x2, axes=-1)
+    inner_products = tf.reduce_sum(x1 * x2, axis=-1)
     x1_norm = tf.norm(x1, ord="euclidean", axis=-1)
     x2_norm = tf.norm(x2, ord="euclidean", axis=-1)
     return 1 - (inner_products / (x1_norm * x2_norm))
 
 
 def contrastive_loss(anchor, pred, y, margin=0.5):
-    distances = tf.math.reduce_euclidean_norm(anchor - pred, axis=-1)
+    distances = cosine_distance(anchor, pred)
+    # distances = tf.math.reduce_euclidean_norm(anchor - pred, axis=-1)
     margin_distances = tf.maximum(margin - distances, 0)
     losses = (1 - y) * tf.math.pow(distances, 2) + y * tf.math.pow(margin_distances, 2)
     return losses
@@ -37,13 +38,25 @@ class v8DetectionLoss:
     """Criterion class for computing training losses."""
 
     def __init__(
-        self, head, device, tal_topk=10, box_gain=7.5, cls_gain=0.5, dfl_gain=1.5
+        self,
+        head,
+        device,
+        tal_topk=10,
+        box_gain=7.5,
+        cls_gain=0.5,
+        dfl_gain=1.5,
+        embed_gain=1,
     ):  # model must be de-paralleled
         """Initializes v8DetectionLoss with the model, defining model-related properties and BCE loss function."""
 
         m = head  # Detect() module
         self.bce = nn.BCEWithLogitsLoss(reduction="none")
-        self.hyp = {"box": box_gain, "cls": cls_gain, "dfl": dfl_gain}
+        self.hyp = {
+            "box": box_gain,
+            "cls": cls_gain,
+            "dfl": dfl_gain,
+            "embed": embed_gain,
+        }
         self.stride = m.stride  # model strides
         self.nc = m.nc  # number of classes
         self.no = m.nc + m.reg_max * 4
@@ -106,7 +119,7 @@ class v8DetectionLoss:
             # pred_dist = (pred_dist.view(b, a, c // 4, 4).softmax(2) * self.proj.type(pred_dist.dtype).view(1, 1, -1, 1)).sum(2)
         return dist2bbox(pred_dist, anchor_points, xywh=False)
 
-    def __call__(self, preds, batch, use_cosine):
+    def __call__(self, preds, batch, embed_topk=3):
         """Calculate the sum of the loss for box, cls and dfl multiplied by batch size."""
         loss = torch.zeros(4, device=self.device)  # box, cls, dfl
         pred_detect = preds[0]
@@ -152,15 +165,17 @@ class v8DetectionLoss:
         # Pboxes
         pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4)
 
-        _, target_bboxes, target_scores, target_embeds, fg_mask, _ = self.assigner(
-            pred_scores.detach().sigmoid(),
-            (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
-            (pred_embeds.detach()).type(gt_embeds.dtype),
-            anchor_points * stride_tensor,
-            gt_labels,
-            gt_bboxes,
-            gt_embeds,
-            mask_gt,
+        _, target_bboxes, target_scores, target_embeds, fg_mask, target_gt_idx = (
+            self.assigner(
+                pred_scores.detach().sigmoid(),
+                (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
+                (pred_embeds.detach()).type(gt_embeds.dtype),
+                anchor_points * stride_tensor,
+                gt_labels,
+                gt_bboxes,
+                gt_embeds,
+                mask_gt,
+            )
         )
 
         target_scores_sum = max(target_scores.sum(), 1)
@@ -174,7 +189,7 @@ class v8DetectionLoss:
         # Bbox loss
         if fg_mask.sum():
             target_bboxes /= stride_tensor
-            loss[0], loss[2] = self.bbox_loss(
+            loss[0], loss[2], iou_scores = self.bbox_loss(
                 pred_distri,
                 pred_bboxes,
                 anchor_points,
@@ -184,18 +199,109 @@ class v8DetectionLoss:
                 fg_mask,
             )
 
+        iou_cls_scores = (iou_scores * target_scores).sum(-1)  # (b, w*h)
+        embed_mask = torch.zeros_like(fg_mask).bool()
+        for batch_index in range(target_gt_idx.shape[0]):
+            for index in torch.unique(target_gt_idx[batch_index]):
+                instance_mask = target_gt_idx[batch_index] == index
+                topk_val, topk_idx = torch.topk(
+                    iou_cls_scores[batch_index] * instance_mask, embed_topk
+                )
+                embed_mask[batch_index][topk_idx] = True
+
         # Embedding loss (euclidean distance)
-        if use_cosine:
-            pred_embeds = torch.nn.functional.normalize(pred_embeds, p=2, dim=-1)
-            target_embeds = torch.nn.functional.normalize(target_embeds, p=2, dim=-1)
-            cos = torch.nn.functional.cosine_similarity(target_embeds, pred_embeds, dim=-1)
-            loss[3] = (1 - cos).sum() / batch_size
-        else:
-            loss[3] = torch.square(target_embeds - pred_embeds).sum() / batch_size
+        # embed_weight = iou_cls_scores[embed_mask]
+        kd = kd_loss(pred_embeds[embed_mask], target_embeds[embed_mask])
+        rkd = rkd_loss(target_embeds[embed_mask], pred_embeds[embed_mask])
+        # loss[3] = (kd + rkd) * embed_weight / embed_weight.sum()
+        loss[3] = kd + rkd
 
         loss[0] *= self.hyp["box"]  # box gain
         loss[1] *= self.hyp["cls"]  # cls gain
         loss[2] *= self.hyp["dfl"]  # dfl gain
+        loss[3] *= self.hyp["embed"]
 
         # loss(box, cls, dfl)
-        return loss.sum() * batch_size, loss.detach()
+        return loss.sum(), loss, fg_mask
+
+
+def kd_loss(pred_embeds, target_embeds):
+    distance_loss = torch.square(target_embeds - pred_embeds).sum(dim=-1)
+    cosine_similarity = 1 - torch.cosine_similarity(target_embeds, pred_embeds, dim=-1)
+    return (distance_loss + cosine_similarity).mean()
+
+
+def rkd_loss(student_embeds, teacher_embeds):
+    distance_loss = nn.functional.huber_loss(
+        rkd_dist(student_embeds), rkd_dist(teacher_embeds)
+    )
+    angle_loss = nn.functional.huber_loss(
+        rkd_angle(student_embeds), rkd_angle(teacher_embeds)
+    )
+    return distance_loss + angle_loss
+
+
+def rkd_dist(embeds):
+    N = embeds.shape[0]
+    epsilon = 1e-6
+    diff = embeds.unsqueeze(0) - embeds.unsqueeze(1)
+    diff = torch.linalg.vector_norm(diff, dim=-1)
+    mu = diff.sum() / (N * N) + epsilon
+    return diff / mu
+
+
+def rkd_angle(embeds):
+    epsilon = 1e-6
+    N, dim = embeds.shape
+    v_i = embeds.reshape(1, 1, N, dim)
+    v_j = embeds.reshape(1, N, 1, dim)
+    v_k = embeds.reshape(N, 1, 1, dim)
+
+    e_ij = (v_i - v_j) / (torch.linalg.vector_norm(v_i - v_j) + epsilon)  # [1, N, N, dim]
+    e_kj = (v_k - v_j) / (torch.linalg.vector_norm(v_k - v_j) + epsilon)  # [N, N, 1, dim]
+
+    cos_angle = (e_ij * e_kj).sum(-1)
+    return cos_angle
+
+
+class BboxLoss(nn.Module):
+    """Criterion class for computing training losses during training."""
+
+    def __init__(self, reg_max=16):
+        """Initialize the BboxLoss module with regularization maximum and DFL settings."""
+        super().__init__()
+        self.dfl_loss = DFLoss(reg_max) if reg_max > 1 else None
+
+    def forward(
+        self,
+        pred_dist,
+        pred_bboxes,
+        anchor_points,
+        target_bboxes,
+        target_scores,
+        target_scores_sum,
+        fg_mask,
+    ):
+        """IoU loss."""
+        weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
+        iou = bbox_iou(pred_bboxes, target_bboxes, xywh=False, CIoU=True)
+        iou_scores = (1.0 - iou[fg_mask]) * weight
+        loss_iou = iou_scores.sum() / target_scores_sum
+
+        # DFL loss
+        if self.dfl_loss:
+            target_ltrb = bbox2dist(
+                anchor_points, target_bboxes, self.dfl_loss.reg_max - 1
+            )
+            loss_dfl = (
+                self.dfl_loss(
+                    pred_dist[fg_mask].view(-1, self.dfl_loss.reg_max),
+                    target_ltrb[fg_mask],
+                )
+                * weight
+            )
+            loss_dfl = loss_dfl.sum() / target_scores_sum
+        else:
+            loss_dfl = torch.tensor(0.0).to(pred_dist.device)
+
+        return loss_iou, loss_dfl, iou

@@ -1,11 +1,8 @@
-from concurrent import futures
-from collections.abc import Callable, Iterable
 from collections import deque
 import datetime
 import logging
 import math
 import os
-import pickle
 import random
 import threading
 import urllib
@@ -26,9 +23,9 @@ IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".bmp"]
 
 def extract_images(path):
     images = []
-    for curdir, subdir, files in os.walk(path):
+    for curdir, _, files in os.walk(path):
         for file in files:
-            name, ext = os.path.splitext(file)
+            _, ext = os.path.splitext(file)
             if not ext in IMAGE_EXTENSIONS:
                 continue
             path = os.path.join(curdir, file)
@@ -58,7 +55,7 @@ def load_image_to_tensor(path):
     return image
 
 
-def random_negative_selector(indices, image_pathes):
+def random_negative_selector(indices, image_pathes, preprocess):
     # description: select negative data randomly
     # args:
     #    indices: indices of anchors from image_pathes
@@ -73,14 +70,13 @@ def random_negative_selector(indices, image_pathes):
                 break
         negative_path = image_pathes[negative_index]
         image_tensor = load_image_to_tensor(negative_path)
-        image_tensor = preprocessing(image_tensor)
-        image_tensor = augmentation(image_tensor)
+        image_tensor = preprocess(image_tensor)
         negative.append(image_tensor)
 
     return tf.stack(negative)
 
 
-def hard_negative_selector(matrix, anchor, indices, image_pathes):
+def hard_negative_selector(matrix, anchor, indices, image_pathes, preprocess):
     # description: select negative value which has lowest distance in train dataset
     # args:
     #    matrix: prediction of all train dataset
@@ -110,8 +106,7 @@ def hard_negative_selector(matrix, anchor, indices, image_pathes):
 
         negative_path = image_pathes[min_index]
         image = load_image_to_tensor(negative_path)
-        image = preprocessing(image)
-        image = augmentation(image)
+        image = preprocess(image)
         negative.append(image)
 
     return tf.stack(negative)
@@ -160,10 +155,10 @@ def is_prime(num):
     return True
 
 
-def get_factors(num, min_value=1):
+def get_factors(num):
     result = []
-    upper_bound = int(math.sqrt(num)) + 1
-    for i in range(min_value, upper_bound):
+    limit = int(math.sqrt(num)) + 1
+    for i in range(1, limit):
         if num % i == 0:
             result.append(i)
             result.append(num // i)
@@ -185,15 +180,37 @@ def detector_preprocessing(inputs):
 
 class EmbeddingPreprocessor:
     def __init__(self):
-        self.preprocessing = models.Sequential(
-            [
-                layers.Resizing(224, 224),
-                layers.Rescaling(1.0 / 255),
-            ]
+        self.input_size = (224, 224)
+        self.image_size = [391, 268]  # height, width
+        self.normal_pos = tf.convert_to_tensor([[72, 32, 275, 236]]) / tf.tile(
+            self.image_size, [2]
+        )  # y1, x1, y2, x2 (normalized)
+        self.normal_pos = tf.cast(self.normal_pos, dtype=tf.float32)
+        self.pendulum_pos = tf.convert_to_tensor([[70, 17, 242, 250]]) / tf.tile(
+            self.image_size, [2]
+        )
+        self.pendulum_pos = tf.cast(self.pendulum_pos, dtype=tf.float32)
+
+    def resize(self, inputs):
+        return tf.image.resize(inputs, size=self.input_size) / 255.0
+
+    def __call__(self, inputs, is_pendulum):
+        input_shape = inputs.shape
+        if len(input_shape) == 3:
+            inputs = tf.expand_dims(inputs, axis=0)
+        crop_box = self.pendulum_pos if is_pendulum else self.normal_pos
+        crop_img = tf.image.crop_and_resize(
+            image=inputs,
+            boxes=crop_box,
+            box_indices=[0],
+            crop_size=self.input_size,
+            method="bilinear",
         )
 
-    def __call__(self, inputs):
-        return self.preprocessing(inputs)
+        if len(input_shape) == 3:
+            return tf.squeeze(crop_img, axis=0) / 255.0
+        else:
+            return crop_img / 255.0
 
 
 class EmbeddingAugmentation:
@@ -215,9 +232,7 @@ class EmbeddingAugmentation:
         return self.augmentation(inputs)
 
 
-def make_square_size(
-    image: np.array, target_size: int, square=False
-):  # size: image size to convert
+def make_square_size(image: np.array, target_size: int):  # size: image size to convert
     height, width = image.shape[:2]
     ratio = target_size / max(height, width)  # ratio
     if ratio != 1:  # if sizes are not equal
@@ -233,15 +248,24 @@ def make_square_size(
     left_padding = int(round(dw - 0.1))
     right_padding = int(round(dw + 0.1))
 
-    image = cv2.copyMakeBorder(
-        image,
-        top=top_padding,
-        bottom=bottom_padding,
-        left=left_padding,
-        right=right_padding,
-        borderType=cv2.BORDER_CONSTANT,
-        value=(114, 114, 114),
-    )
+    noise_background = np.random.normal(
+        loc=127, scale=30, size=(target_size, target_size, 3)
+    ).astype(np.uint8)
+    noise_background[
+        top_padding : top_padding + height,
+        left_padding : left_padding + width,
+    ] = image
+    image = noise_background
+
+    # image = cv2.copyMakeBorder(
+    #     image,
+    #     top=top_padding,
+    #     bottom=bottom_padding,
+    #     left=left_padding,
+    #     right=right_padding,
+    #     borderType=cv2.BORDER_CONSTANT,
+    #     value=(114, 114, 114),
+    # )
 
     return image, ratio, (left_padding, top_padding)
 
@@ -257,7 +281,7 @@ class ImageLoader:
     def set_queue(self, data):
         self.queue = deque(data)
 
-    def get_image_names(self):
+    def get_file_names(self):
         return self.name_queue
 
     def run(self):

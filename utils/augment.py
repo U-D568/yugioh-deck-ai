@@ -48,28 +48,36 @@ def zoomout_and_transition(image, min_scale=0.5):
     right = dw - left
     top = round(dh * random.random())
     bottom = dh - top
-    new_image = cv2.copyMakeBorder(
-        new_image,
-        top,
-        bottom,
-        left,
-        right,
-        cv2.BORDER_CONSTANT,
-        value=(114, 114, 114),
-    )
+    noise_background = np.random.normal(loc=127, scale=30, size=(height, width, 3))
+    noise_background[top: top+new_height, left:left+new_width] = new_image
+    new_image = noise_background
+
+    # new_image = cv2.copyMakeBorder(
+    #     new_image,
+    #     top,
+    #     bottom,
+    #     left,
+    #     right,
+    #     cv2.BORDER_CONSTANT,
+    #     value=(114, 114, 114),
+    # )
 
     return new_image, scale, (left, top)
 
 
 def make_deck_image(images, padding_value=(114, 114, 114)):
-    divisor = common.get_factors(len(images), 3)
     length = len(images)
-    if len(divisor) == 0:
-        length = int(math.ceil(len(images) / 10) * 10)
-        divisor = common.get_factors(length, 3)
+    divisor = common.get_factors(length)
 
-    row = random.choice(divisor)
-    col = length // row
+    random.shuffle(divisor)
+    while True:
+        row = divisor.pop()
+        col = length // row
+        ratio = max(row, col) / min(row, col)
+        if ratio < 10:
+            break
+        if len(divisor) == 0:
+            raise ValueError(f"{length}")
 
     height, width = images[0].shape[:2]
     sx = np.arange(0, col * width, width)

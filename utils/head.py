@@ -26,7 +26,7 @@ class Detect(nn.Module):
     anchors = torch.empty(0)  # init
     strides = torch.empty(0)  # init
 
-    def __init__(self, nc=80, ch=(), embedding_size=1000):
+    def __init__(self, nc=80, ch=(), embedding_size=256):
         """Initializes the YOLOv8 detection layer with specified number of classes and channels."""
         super().__init__()
         self.nc = nc  # number of classes
@@ -52,8 +52,11 @@ class Detect(nn.Module):
         )
         self.embedding_layers = nn.ModuleList(
             nn.Sequential(
-                Conv(x, self.embedding_size, 3),
-                nn.Conv2d(self.embedding_size, self.embedding_size, 1),
+                ResidualConv(x, self.embedding_size // 2, self.embedding_size, 3),
+                ResidualConv(self.embedding_size, self.embedding_size // 2, self.embedding_size, 3),
+                ResidualConv(self.embedding_size, self.embedding_size // 2, self.embedding_size, 1),
+                ResidualConv(self.embedding_size, self.embedding_size // 2, self.embedding_size, 1),
+                Conv(self.embedding_size, self.embedding_size, 1)
             )
             for x in ch
         )
@@ -69,6 +72,8 @@ class Detect(nn.Module):
         for i in range(self.nl):
             embeds.append(self.embedding_layers[i](x[i]))
             x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
+        if torch.isnan(embeds[0]).sum() > 0 or torch.isnan(embeds[1]).sum() > 0 or torch.isnan(embeds[2]).sum() > 0:
+            print(1)
         if self.training:  # Training path
             return x, embeds
         y, cat_embeds = self._inference(x, embeds)
@@ -165,3 +170,18 @@ class Detect(nn.Module):
             [boxes[i, index // nc], scores[..., None], (index % nc)[..., None].float()],
             dim=-1,
         )
+
+
+class ResidualConv(nn.Module):
+    def __init__(self, in_ch, mid_ch, out_ch, kernel_size):
+        super().__init__()
+        self.residual_block = nn.Sequential(
+            Conv(in_ch, mid_ch, kernel_size),
+            Conv(mid_ch, out_ch, kernel_size),
+        )
+        self.projection = Conv(in_ch, out_ch, kernel_size)
+        self.relu = nn.ReLU()
+    
+    def forward(self, x):
+        return self.relu(self.projection(x) + self.residual_block(x))
+

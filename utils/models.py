@@ -2,7 +2,6 @@ import pickle
 
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import Model
 from tensorflow.keras.applications.efficientnet_v2 import EfficientNetV2B0
 
 import torch
@@ -16,24 +15,30 @@ from utils import common, head, ops, struct
 from config import Config
 
 
-class EmbeddingModel(Model):
+class EmbeddingModel():
     def __init__(self, input_shape=Config.IMAGE_SHAPE, **kargs):
-        super().__init__(**kargs)
-        self.model = EfficientNetV2B0(
+        self._backbone = EfficientNetV2B0(
             include_top=True,
             weights="imagenet",
             classifier_activation=None,
             input_shape=input_shape,
         )
+        self._head = tf.keras.Sequential([
+            tf.keras.layers.Dense(512, activation="relu"),
+            tf.keras.layers.Dense(256, activation="relu"),
+        ])
+        self.model = tf.keras.Sequential([self._backbone, self._head])
 
-    def __call__(self, anchor, positive, negative):
-        pred_anchor = self.model(anchor)
-        pred_positive = self.model(positive)
-        pred_negative = self.model(negative)
-        return pred_anchor, pred_positive, pred_negative
+    def __call__(self, inputs):
+        out = self.model(inputs)
+        out = tf.math.l2_normalize(out, axis=-1)
+        return out
 
     def load(self, path):
         self.model = tf.keras.models.load_model(path)
+
+    def save(self, path):
+        self.model.save(path)
 
     def make_matrix(self, dataset, batch_size=64):
         matrix = []
@@ -43,7 +48,7 @@ class EmbeddingModel(Model):
         matrix = tf.concat(matrix, axis=0)
         return matrix
 
-    def pred(self, inputs, batch_size=None):
+    def predict(self, inputs, batch_size=None):
         if batch_size is None:
             batch_size = inputs.shape[0]
         return self.model.predict(inputs, batch_size=batch_size, verbose=False)
@@ -71,9 +76,9 @@ class YoloDetector:
 
 
 class Detector(nn.Module):
-    def __init__(self, embedding=1000):
+    def __init__(self):
         super().__init__()
-        self.embedding_size = embedding
+        self.embedding_size = 256
         self.nc = 1
 
         # backbone

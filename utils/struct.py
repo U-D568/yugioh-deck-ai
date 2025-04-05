@@ -41,7 +41,7 @@ class DetResult:
             p2 = (int(xyxy[2]), int(xyxy[3]))
             out_image = cv2.rectangle(out_image, p1, p2, (255, 0, 0), 1)
 
-            out_image = Image.fromarray(out_image)
+            out_image = Image.fromarray(out_image.astype(np.uint8))
             draw = ImageDraw.Draw(out_image)
             draw.text(p1, name, font=font, fill=(255, 0, 0))
 
