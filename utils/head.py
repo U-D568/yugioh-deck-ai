@@ -53,10 +53,9 @@ class Detect(nn.Module):
         self.embedding_layers = nn.ModuleList(
             nn.Sequential(
                 ResidualConv(x, self.embedding_size // 2, self.embedding_size, 3),
-                ResidualConv(self.embedding_size, self.embedding_size // 2, self.embedding_size, 3),
-                ResidualConv(self.embedding_size, self.embedding_size // 2, self.embedding_size, 1),
-                ResidualConv(self.embedding_size, self.embedding_size // 2, self.embedding_size, 1),
-                Conv(self.embedding_size, self.embedding_size, 1)
+                ResidualConv(self.embedding_size, self.embedding_size, self.embedding_size, 3),
+                Conv(self.embedding_size, self.embedding_size, 1),
+                nn.Conv2d(self.embedding_size, self.embedding_size, 1)
             )
             for x in ch
         )
@@ -72,8 +71,6 @@ class Detect(nn.Module):
         for i in range(self.nl):
             embeds.append(self.embedding_layers[i](x[i]))
             x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
-        if torch.isnan(embeds[0]).sum() > 0 or torch.isnan(embeds[1]).sum() > 0 or torch.isnan(embeds[2]).sum() > 0:
-            print(1)
         if self.training:  # Training path
             return x, embeds
         y, cat_embeds = self._inference(x, embeds)
@@ -85,6 +82,8 @@ class Detect(nn.Module):
         shape = x[0].shape  # BCHW
         x_cat = torch.cat([xi.view(shape[0], self.no, -1) for xi in x], 2)
         embed = torch.cat([xi.view(shape[0], self.embedding_size, -1) for xi in embed], 2)
+        l2_norm = embed.norm(2, dim=1, keepdim=True)
+        embed = embed / l2_norm
         if self.dynamic or self.shape != shape:
             self.anchors, self.strides = (
                 x.transpose(0, 1) for x in make_anchors(x, self.stride, 0.5)

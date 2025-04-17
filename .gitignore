@@ -201,6 +201,8 @@ backup
 weights/*
 runs
 test/
+embedding/weights/epoch*
+
 !weights/embedding.h5
 !weights/yolov8n_detector.pt
 !weights/matrix.npy

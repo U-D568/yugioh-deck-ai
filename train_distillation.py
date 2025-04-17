@@ -12,9 +12,13 @@ from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from ultralytics import YOLO
 
-from utils.models import Detector, EmbeddingModel
 from utils import common, tal, losses, logger, gradNorm
-from utils.dataset import DecklistDataset
+from data.preprocess.tf import EmbeddingPreprocessor
+from data.preprocess.torch import detector_preprocessing
+from data.dataset.torch import DecklistDataset
+from loss.torch.detection_loss import v8DetectionLoss
+from models.tf import EmbeddingModel
+from models.torch import Detector
 
 
 def make_adamw(model, lr=1e-4, momentum=0.9, decay=0.01):
@@ -61,7 +65,7 @@ def run_one_epoch(
     is_train,
     optimizer,
 ):
-    teacher_preprocess = common.EmbeddingPreprocessor()
+    teacher_preprocess = EmbeddingPreprocessor()
     device = next(student_model.parameters()).device
     dtype = next(student_model.parameters()).dtype
     total_loss = torch.zeros(4)
@@ -95,13 +99,13 @@ def run_one_epoch(
                 crop = teacher_preprocess.resize(crop)
                 teacher_inputs.append(crop)
             teacher_inputs = tf.stack(teacher_inputs)
-            teacher_embedding = teacher_model.predict(teacher_inputs, 8)
-            teacher_embedding = torch.from_numpy(teacher_embedding)
-            gt_embeds.append(teacher_embedding)
+            teacher_embeds = teacher_model(teacher_inputs).numpy()
+            teacher_embeds = torch.from_numpy(teacher_embeds)
+            gt_embeds.append(teacher_embeds)
         batch["embedding"] = torch.concatenate(gt_embeds, dim=0)
 
         # student preprocess
-        student_inputs = common.detector_preprocessing(images).to(device)
+        student_inputs = detector_preprocessing(images).to(device)
 
         # inference
         student_model.train()
@@ -114,8 +118,6 @@ def run_one_epoch(
         # loss
         embed_topk = epoch // 50 + 1
         loss, loss_item, fg_mask = loss_fn(preds, batch, embed_topk=embed_topk)
-        if torch.isnan(loss).sum() > 0:
-            print(1)
         total_loss += loss_item.detach().cpu()
         sample_count += batch_size
 
@@ -135,7 +137,7 @@ def main():
     use_logger = True
     batch_size = 8
     epochs = 100
-    train_embedding_only = True
+    train_embedding_only = False
     device = (
         torch.device("cuda", index=0)
         if torch.cuda.is_available()
@@ -144,7 +146,7 @@ def main():
     log = logger.TrainLogger() if use_logger else None
 
     # prepare datasets
-    train_dataset = make_dataset("datasets/train.csv", 1)
+    train_dataset = DecklistDataset.load_from_csv("datasets/train.csv", (1, 4))
     train_loader = DataLoader(
         train_dataset, batch_size, shuffle=True, collate_fn=train_dataset.collate_fn
     )
@@ -155,20 +157,18 @@ def main():
     # )
 
     # prepare student model
-    pretrained_model = YOLO("weights/yolov8n_detector.pt")
-    pre_model_dict = pretrained_model.model.model.state_dict()
+    # pretrained_model = YOLO("weights/yolov8n_detector.pt")
+    # pre_model_dict = pretrained_model.model.model.state_dict()
+    pre_model_dict = torch.load("save/best.pt")
 
     student_model = Detector()
     model_dict = student_model.state_dict()
 
     # from checkpoint
-    pre_model_dict = torch.load("save/last.pt")
-    student_model.load_state_dict(pre_model_dict)
+    # pre_model_dict = torch.load("save/last.pt")
+    # student_model.load_state_dict(pre_model_dict)
     
     for name, param in student_model.named_parameters():
-        if "dfl" in name:
-            param.requires_grad_(False)
-
         if train_embedding_only:
             if "embedding_layers" in name:
                 param.requires_grad_(True)
@@ -178,13 +178,14 @@ def main():
             param.requires_grad_(False if "dfl" in name else True)
 
     # load pretrained yolo
-    # for key in pre_model_dict.keys():
-    #     new_key = f"layer{key}"
-    #     model_dict[new_key] = pre_model_dict[key].clone().detach()
-    # student_model.load_state_dict(model_dict)
+    for key in pre_model_dict.keys():
+        if "embedding" in key:
+            continue
+        model_dict[key] = pre_model_dict[key].clone().detach()
+    student_model.load_state_dict(model_dict)
 
     student_model = student_model.cuda()
-    del pretrained_model, pre_model_dict
+    del pre_model_dict
 
     # prevent TF model occupies all memories
     gpus = tf.config.list_physical_devices("GPU")
@@ -199,8 +200,9 @@ def main():
     teacher_model.load("embedding/weights/best.h5")
 
     # losses
-    det_loss = losses.v8DetectionLoss(head=student_model.layer22, device=device, box_gain=0, cls_gain=0, dfl_gain=0, embed_gain=1)
-    optimizer = AdamW(student_model.parameters(), lr=1e-4, weight_decay=0.01)
+    # box_gain=7.5, cls_gain=0.5, dfl_gain=1.5,
+    det_loss = v8DetectionLoss(head=student_model.layer22, device=device, box_gain=7.5, cls_gain=0.5, dfl_gain=1.5, embed_gain=0)
+    optimizer = AdamW(student_model.parameters(), lr=1e-5, weight_decay=0.01)
 
     # grad norm
     # grad_norm = gradNorm.GradNorm(3, student_model.layer21)

@@ -1,22 +1,11 @@
 from collections import deque
-import datetime
-import logging
 import math
 import os
-import random
 import threading
 import urllib
 
 import cv2
 import numpy as np
-import pandas as pd
-import tensorflow as tf
-from tensorflow.keras import layers, models
-import torch
-
-import utils
-from config import Config
-
 
 IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".bmp"]
 
@@ -37,79 +26,6 @@ def get_filename(path):
     basename = os.path.basename(path)
     name, ext = os.path.splitext(basename)
     return name
-
-
-def count_parameters(layers: torch.nn.ModuleList):
-    total = 0
-    for param in layers.parameters():
-        count = 1
-        for size in param.size():
-            count *= size
-        total += count
-    return total
-
-
-def load_image_to_tensor(path):
-    image = tf.io.read_file(path)
-    image = tf.image.decode_jpeg(image, channels=3)
-    return image
-
-
-def random_negative_selector(indices, image_pathes, preprocess):
-    # description: select negative data randomly
-    # args:
-    #    indices: indices of anchors from image_pathes
-    #    image_pathes: total image pathes of dataset
-    negative = []
-
-    for index in indices:
-        negative_index = -1
-        while True:
-            negative_index = random.randrange(len(image_pathes))
-            if negative_index != index:
-                break
-        negative_path = image_pathes[negative_index]
-        image_tensor = load_image_to_tensor(negative_path)
-        image_tensor = preprocess(image_tensor)
-        negative.append(image_tensor)
-
-    return tf.stack(negative)
-
-
-def hard_negative_selector(matrix, anchor, indices, image_pathes, preprocess):
-    # description: select negative value which has lowest distance in train dataset
-    # args:
-    #    matrix: prediction of all train dataset
-    #    anchor: prediction of anchor
-    #    indices: indices of anchor from image_pathes
-    #    image_pathes: image_pathest of total dataset
-    negative = []
-    for encoding, anchor_index in zip(anchor, indices):
-        min_index = -1
-        min_value = math.inf
-
-        if anchor_index > 0:
-            lower_matrix = matrix[:anchor_index]
-            lower_matrix = utils.losses.square_norm(lower_matrix, encoding)
-            negative_index = tf.argmin(lower_matrix, axis=0, output_type=tf.int32)
-            if lower_matrix[negative_index] < min_value:
-                min_value = lower_matrix[negative_index]
-                min_index = negative_index
-
-        if anchor_index < len(image_pathes) - 1:
-            upper_matrix = matrix[anchor_index + 1 :]
-            upper_matrix = utils.losses.square_norm(upper_matrix, encoding)
-            negative_index = tf.argmin(upper_matrix, axis=0, output_type=tf.int32)
-            if upper_matrix[negative_index] < min_value:
-                min_value = upper_matrix[negative_index]
-                min_index = negative_index + anchor_index + 1
-
-        negative_path = image_pathes[min_index]
-        image = load_image_to_tensor(negative_path)
-        image = preprocess(image)
-        negative.append(image)
-
-    return tf.stack(negative)
 
 
 def xyxy2xywh(ary: np.array):
@@ -143,11 +59,6 @@ def xywh2xyxy(ary: np.array):
     return xyxy
 
 
-def make_batch(data, batch_size):
-    for i in range(0, len(data), batch_size):
-        yield data[i : i + batch_size]
-
-
 def is_prime(num):
     for i in range(2, int(math.sqrt(num)) + 1):
         if num % i == 0:
@@ -163,111 +74,6 @@ def get_factors(num):
             result.append(i)
             result.append(num // i)
     return result
-
-
-def detector_preprocessing(inputs):
-    # preprocess
-    assert len(inputs.shape) == 4 or len(inputs.shape) == 3
-
-    deck_image = torch.from_numpy(inputs).float()
-    if len(inputs.shape) == 3:
-        deck_image = deck_image.permute([2, 0, 1])
-    else:
-        deck_image = deck_image.permute([0, 3, 1, 2])
-
-    return deck_image / 255.0
-
-
-class EmbeddingPreprocessor:
-    def __init__(self):
-        self.input_size = (224, 224)
-        self.image_size = [391, 268]  # height, width
-        self.normal_pos = tf.convert_to_tensor([[72, 32, 275, 236]]) / tf.tile(
-            self.image_size, [2]
-        )  # y1, x1, y2, x2 (normalized)
-        self.normal_pos = tf.cast(self.normal_pos, dtype=tf.float32)
-        self.pendulum_pos = tf.convert_to_tensor([[70, 17, 242, 250]]) / tf.tile(
-            self.image_size, [2]
-        )
-        self.pendulum_pos = tf.cast(self.pendulum_pos, dtype=tf.float32)
-
-    def resize(self, inputs):
-        return tf.image.resize(inputs, size=self.input_size) / 255.0
-
-    def __call__(self, inputs, is_pendulum):
-        input_shape = inputs.shape
-        if len(input_shape) == 3:
-            inputs = tf.expand_dims(inputs, axis=0)
-        crop_box = self.pendulum_pos if is_pendulum else self.normal_pos
-        crop_img = tf.image.crop_and_resize(
-            image=inputs,
-            boxes=crop_box,
-            box_indices=[0],
-            crop_size=self.input_size,
-            method="bilinear",
-        )
-
-        if len(input_shape) == 3:
-            return tf.squeeze(crop_img, axis=0) / 255.0
-        else:
-            return crop_img / 255.0
-
-
-class EmbeddingAugmentation:
-    def __init__(self):
-        self.augmentation = models.Sequential(
-            [
-                layers.Rescaling(255),
-                layers.Resizing(Config.IMAGE_SHAPE[0], Config.IMAGE_SHAPE[1]),
-                utils.augment.RandomZoominAndOut((0.4, 1)),
-                # layers.RandomFlip("horizontal_and_vertical"),
-                layers.RandomContrast(0.1),
-                layers.RandomBrightness(0.1),
-                layers.RandomTranslation((-0.1, 0.1), (-0.1, 0.1)),
-                layers.Rescaling(1.0 / 255),
-            ]
-        )
-
-    def __call__(self, inputs):
-        return self.augmentation(inputs)
-
-
-def make_square_size(image: np.array, target_size: int):  # size: image size to convert
-    height, width = image.shape[:2]
-    ratio = target_size / max(height, width)  # ratio
-    if ratio != 1:  # if sizes are not equal
-        width = min(math.ceil(width * ratio), target_size)
-        height = min(math.ceil(height * ratio), target_size)
-        image = cv2.resize(image, (width, height), interpolation=cv2.INTER_LINEAR)
-
-    # padding size
-    dw = (target_size - width) / 2
-    dh = (target_size - height) / 2
-    top_padding = int(round(dh - 0.1))
-    bottom_padding = int(round(dh + 0.1))
-    left_padding = int(round(dw - 0.1))
-    right_padding = int(round(dw + 0.1))
-
-    noise_background = np.random.normal(
-        loc=127, scale=30, size=(target_size, target_size, 3)
-    ).astype(np.uint8)
-    noise_background[
-        top_padding : top_padding + height,
-        left_padding : left_padding + width,
-    ] = image
-    image = noise_background
-
-    # image = cv2.copyMakeBorder(
-    #     image,
-    #     top=top_padding,
-    #     bottom=bottom_padding,
-    #     left=left_padding,
-    #     right=right_padding,
-    #     borderType=cv2.BORDER_CONSTANT,
-    #     value=(114, 114, 114),
-    # )
-
-    return image, ratio, (left_padding, top_padding)
 
 
 class ImageLoader:
@@ -323,9 +129,3 @@ class ImageLoader:
             except Exception as e:
                 raise e
         return cv2.imread(path)[:, :, ::-1].copy()
-
-
-class Logger:
-    def __init__(self):
-        now = datetime.datetime.strftime("%Y-%M-%d %H%m%s")
-        self.logger = logging.basicConfig(filename=now, filemode="w")

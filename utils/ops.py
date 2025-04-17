@@ -87,11 +87,12 @@ def non_max_suppression(
 
     t = time.time()
     output = [torch.zeros((0, 6 + nm), device=prediction.device)] * bs
-    indices = []
+    nms_indices = []
     for xi, x in enumerate(prediction):  # image index, image inference
         # Apply constraints
         # x[((x[:, 2:4] < min_wh) | (x[:, 2:4] > max_wh)).any(1), 4] = 0  # width-height
         x = x[xc[xi]]  # confidence
+        xc_args = torch.where(xc[xi])[0]
 
         # Cat apriori labels if autolabelling
         if labels and len(labels[xi]) and not rotated:
@@ -131,11 +132,11 @@ def non_max_suppression(
         scores = x[:, 4]  # scores
         if rotated:
             boxes = torch.cat((x[:, :2] + c, x[:, 2:4], x[:, -1:]), dim=-1)  # xywhr
-            i = nms_rotated(boxes, scores, iou_thres)
+            nms_result = nms_rotated(boxes, scores, iou_thres)
         else:
             boxes = x[:, :4] + c  # boxes (offset by class)
-            i = torchvision.ops.nms(boxes, scores, iou_thres)  # NMS
-        i = i[:max_det]  # limit detections
+            nms_result = torchvision.ops.nms(boxes, scores, iou_thres)  # NMS
+        nms_result = nms_result[:max_det]  # limit detections
 
         # # Experimental
         # merge = False  # use merge-NMS
@@ -149,10 +150,10 @@ def non_max_suppression(
         #     if redundant:
         #         i = i[iou.sum(1) > 1]  # require redundancy
 
-        indices.append(i)
-        output[xi] = x[i]
+        output[xi] = x[nms_result]
+        nms_indices.append(xc_args[nms_result])
         # if (time.time() - t) > time_limit:
         #     LOGGER.warning(f"WARNING ⚠️ NMS time limit {time_limit:.3f}s exceeded")
         #     break  # time limit exceeded
 
-    return output, indices
+    return output, nms_indices
