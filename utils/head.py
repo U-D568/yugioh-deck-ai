@@ -52,8 +52,8 @@ class Detect(nn.Module):
         )
         self.embedding_layers = nn.ModuleList(
             nn.Sequential(
-                ResidualConv(x, self.embedding_size // 2, self.embedding_size, 3),
-                ResidualConv(self.embedding_size, self.embedding_size, self.embedding_size, 3),
+                Conv(x, self.embedding_size // 2, 3),
+                Conv(self.embedding_size // 2, self.embedding_size, 3),
                 Conv(self.embedding_size, self.embedding_size, 1),
                 nn.Conv2d(self.embedding_size, self.embedding_size, 1)
             )

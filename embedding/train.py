@@ -15,13 +15,17 @@ from sklearn.model_selection import train_test_split
 sys.path.append(f"{os.getcwd()}")
 
 from loss.tf import contrastive_loss
-from utils import common, models, losses, logger
+from utils import logger
 from data.dataset.tf import EmbeddingDataset
 from data.preprocess.tf import EmbeddingPreprocessor
 from data.augmentation.tf import EmbeddingAugmentation
 from structures import EmbeddingMatrix
 from models.tf import EmbeddingModel
 
+try:
+    tf.config.experimental.set_memory_growth(tf.config.list_physical_devices("GPU")[0], True)
+except RuntimeError as e:
+    raise e
 
 class TFWarmUpScheduler(tf.keras.optimizers.schedules.LearningRateSchedule):
     def __init__(
@@ -67,15 +71,14 @@ def main():
     log = logger.TrainLogger()
 
     # train hyper parameter
-    EPOCHS = 100
+    EPOCHS = 20
     HARD_SELECT = 0
     BATCH_SIZE = 16
     INPUT_SHAPE = (224, 224, 3)
     SAVE_PATH = "embedding/weights"
 
     # preprocessor
-    image_preprocess = EmbeddingPreprocessor()
-    augmentation = EmbeddingAugmentation(min_ratio=0.1, max_ratio=0.2)
+    augmentation = EmbeddingAugmentation(min_ratio=0.1, max_ratio=0.4)
 
     if not os.path.exists(SAVE_PATH):
         os.makedirs(SAVE_PATH)
@@ -88,7 +91,7 @@ def main():
     train_dataset = EmbeddingDataset.load("datasets/train.csv")
     # valid_dataset = EmbeddingDataset.load("datasets/valid.csv")
 
-    model.load("embedding/weights/best.h5")
+    model.load("embedding/weights/epoch82/best.h5")
     total_steps = math.ceil(len(train_dataset) / BATCH_SIZE)
     warmup = TFWarmUpScheduler(
         base_lr=1e-4, warmup_epochs=3, total_epochs=EPOCHS, steps_per_epoch=total_steps
@@ -134,8 +137,8 @@ def main():
                 pred_anchor = model(anchor_img)
                 pred_positive = model(positive_img)
                 pred_negative = model(negative_img)
-                pos_loss = contrastive_loss(pred_anchor, pred_positive, 0, 0.3)
-                neg_loss = contrastive_loss(pred_anchor, pred_negative, 1, 0.3)
+                pos_loss = contrastive_loss(pred_anchor, pred_positive, 0, 0.2)
+                neg_loss = contrastive_loss(pred_anchor, pred_negative, 1, 0.2)
                 loss = tf.reduce_mean(pos_loss + neg_loss)
             gradients = tape.gradient(loss, model.model.trainable_variables)
             optimizer.apply_gradients(zip(gradients, model.model.trainable_variables))

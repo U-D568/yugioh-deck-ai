@@ -5,8 +5,6 @@ import gc
 import tensorflow as tf
 
 sys.path.append(f"{os.getcwd()}")
-
-from utils import common, models, logger
 from data.dataset.tf import EmbeddingDataset
 from data.augmentation.tf import EmbeddingAugmentation
 from data.preprocess.tf import EmbeddingPreprocessor
@@ -15,9 +13,13 @@ from loss.tf import cosine_distance
 from models.tf import EmbeddingModel
 
 
-def main():
-    log = logger.TrainLogger()
+try:
+    tf.config.experimental.set_memory_growth(tf.config.list_physical_devices("GPU")[0], True)
+except RuntimeError as e:
+    raise e
 
+
+def main():
     # train hyper parameter
     HARD_SELECT = 0
     BATCH_SIZE = 8
@@ -25,7 +27,7 @@ def main():
 
     # preprocessor
     image_preprocess = EmbeddingPreprocessor()
-    augmentation = EmbeddingAugmentation(0.4, 0.99)
+    augmentation = EmbeddingAugmentation(0.1, 0.4)
 
     # initalize hyper-parameters
     model = EmbeddingModel(INPUT_SHAPE)
@@ -37,6 +39,8 @@ def main():
     valid_dataset = valid_dataset + train_dataset
     valid_matrix = EmbeddingMatrix(model, valid_dataset)
     valid_matrix.update_matrix()
+
+    valid_dataset = EmbeddingDataset.load("datasets/valid.csv")
     gc.collect()
 
     hit_count = 0

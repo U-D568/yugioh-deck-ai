@@ -21,7 +21,7 @@ def random_pixelate(image, min_scale=0.5, max_scale=1.0):
     return pixelated
 
 
-def random_transition(image, min_scale=0.5, max_scale=1.0):
+def random_zoom_transition(image, min_scale=0.5, max_scale=1.0):
     # resize image
     height, width = image.shape[:2]
     scale = random.uniform(min_scale, max_scale)

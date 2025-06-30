@@ -129,3 +129,6 @@ class ImageLoader:
             except Exception as e:
                 raise e
         return cv2.imread(path)[:, :, ::-1].copy()
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)

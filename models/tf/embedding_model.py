@@ -39,5 +39,5 @@ class EmbeddingModel:
         matrix = tf.concat(matrix, axis=0)
         return matrix
 
-    def predict(self, inputs, batch_size=None):
+    def predict(self, inputs):
         return self.model(inputs)

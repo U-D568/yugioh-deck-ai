@@ -1,3 +1,5 @@
+from typing import List
+
 import tensorflow as tf
 
 import torch
@@ -132,7 +134,7 @@ class Detector(nn.Module):
 
     def postprocess(
         self, pred_bbox, pred_embeds, input_shape, original_images
-    ) -> DetectionResult:
+    ) -> List[DetectionResult]:
         pred_bbox, nms_indices = ops.non_max_suppression(pred_bbox)
 
         embeds = []
@@ -148,8 +150,12 @@ class Detector(nn.Module):
             height = bbox[:, 3] - bbox[:, 1]
             mask = torch.logical_and(width > 0, height > 0)
 
-            bbox = bbox[mask].detach().cpu().numpy()
-            embed = embed[mask].detach().cpu().numpy()
+            try:
+                bbox = bbox[mask].detach().cpu().numpy()
+                embed = embed[mask].detach().cpu().numpy()
+            except:
+                results.append(DetectionResult(ori_img, [], []))
+                continue
 
             results.append(DetectionResult(ori_img, bbox, embed))
         return results

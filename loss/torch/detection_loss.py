@@ -177,8 +177,8 @@ class v8DetectionLoss:
         iou_cls_scores = (iou_scores * target_scores).sum(-1)  # (b, w*h)
         embed_mask = torch.zeros_like(fg_mask).bool()
         for batch_index in range(target_gt_idx.shape[0]):
-            for index in torch.unique(target_gt_idx[batch_index]):
-                instance_mask = target_gt_idx[batch_index] == index
+            for instance_id in torch.unique(target_gt_idx[batch_index]):
+                instance_mask = target_gt_idx[batch_index] == instance_id
                 topk_val, topk_idx = torch.topk(
                     iou_cls_scores[batch_index] * instance_mask, embed_topk
                 )
@@ -197,7 +197,7 @@ class v8DetectionLoss:
         loss[3] *= self.hyp["embed"]
 
         # loss(box, cls, dfl)
-        return loss.sum(), loss, fg_mask
+        return loss.sum(), loss.detach().cpu(), fg_mask
 
 
 class BboxLoss(nn.Module):

@@ -8,7 +8,7 @@ from torch.utils.data import Dataset
 
 from utils.image_utils import (
     random_pixelate,
-    random_transition,
+    random_zoom_transition,
     make_square_shape,
     make_deck_image,
 )
@@ -17,21 +17,31 @@ from utils import common
 
 class DecklistDataset(Dataset):
     @staticmethod
-    def load_from_csv(df_path, deck_size, image_dir="datasets/card_images_small/", ):
+    def load_from_csv(df_path, deck_size, image_dir="datasets/card_images_small/"):
         X_train = pd.read_csv(df_path)
         id_list = X_train["id"].tolist()
         id_list = list(map(lambda x: image_dir + str(x) + ".jpg", id_list))
         card_type = list(
             map(lambda x: x.lower().startswith("pendulum"), X_train["type"].tolist())
         )
-        return DecklistDataset(id_list, card_type, deck_size)
+        return DecklistDataset(id_list, card_type, deck_shape=deck_size)
 
-    def __init__(self, image_pathes, is_pendulum, deck_shape=60, num_workers=4):
+    def __init__(
+        self,
+        image_pathes,
+        is_pendulum,
+        pixelate_scale=(0.5, 1.0),
+        zoom_scale=(0.5, 1.0),
+        deck_shape=60,
+        num_workers=4,
+    ):
         self.image_loader = common.ImageLoader(num_workers=num_workers)
         self.device = torch.device
         self.card_data = list(zip(image_pathes, is_pendulum))
         self.deck_shape = deck_shape
         self.deck_data = self.make_deck_images()
+        self.pixelate_scale = pixelate_scale
+        self.zoom_scale = zoom_scale
 
         # relative coordinates of ilust in image
         self.card_size = np.array([268, 391])
@@ -107,8 +117,12 @@ class DecklistDataset(Dataset):
         xyxy = []
         for i, image in enumerate(images):
             # augment indivisual card image
-            image = random_pixelate(image, 0.1, 0.4)
-            image, ratio, offset = random_transition(image)
+            image = random_pixelate(
+                image, min(self.pixelate_scale), max(self.pixelate_scale)
+            )
+            image, ratio, offset = random_zoom_transition(
+                image, min(self.zoom_scale), max(self.zoom_scale)
+            )
             images[i] = image
             h, w, _ = image.shape
 
